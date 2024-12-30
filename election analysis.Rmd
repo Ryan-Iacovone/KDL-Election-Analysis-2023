@@ -1,0 +1,392 @@
+```{r}
+library(tidyverse)
+library(readxl)
+library(ggthemes)
+library(RColorBrewer)
+library(sf)
+library(scales) # for percent function 
+
+# Election data 
+election <- read_excel("Data/kdl election data 2023.xlsx")
+
+spatial <- st_read("Data/tl_2022_26_cousub/tl_2022_26_cousub.shp")
+
+USA <- st_read("Data/tl_2022_us_county/tl_2022_us_county.shp")
+
+#Reading in the Michigan county data 
+michigan <- st_read("Data/tl_2018_us_county/tl_2018_us_county.shp") %>% 
+      filter(STATEFP == 26)
+
+#Just Kent county data 
+kent <- filter(michigan, NAME == "Kent")
+```
+# Data Processing 
+
+## string processing 
+```{r}
+# Gather township, city, and charter township info
+election$govt <- character(length(election$Precinct))  # Initialize a new column
+
+for (i in seq_along(election$Precinct)) {
+  split_result <- str_split(election$Precinct[i], " ")
+  
+  # Adding charter township exception
+  if (split_result[[1]][3] %in% c("Township", "Charter")) {
+    election$govt[i] <- "Charter Township"
+    
+  # Handling exception for EGR  
+  } else if (split_result[[1]][4] == "City") {
+      election$govt[i] <- "City"
+    
+  # The rest     
+  } else {
+    election$govt[i] <- split_result[[1]][2]
+  }
+}
+
+# this regex pattern will match any occurrence of the specified words ("Ward", "Precinct" or "Precincts", "Charter", "Township", "City"), the HTML entity for ampersand ("&"), and any digit (0-9) in a given text. The (s)? allows for an optional 's' in the "Precinct" part, making it flexible for both singular and plural forms.
+
+pattern1 <- "Ward|Precinct(s)?|Charter|Township|City|&amp;|\\d"
+
+pattern2 <- "Ward|Precinct(s)?|&amp;|\\d"
+
+election$city_name <- str_trim(str_remove_all(election$Precinct, pattern = pattern1))
+
+election$full_cn <- str_trim(str_remove_all(election$Precinct, pattern = pattern2))
+
+rm(split_result)
+```
+
+
+## Condolsidating each precinct based on township/city + calculating new variables 
+```{r}
+election_result <- election %>% 
+  group_by(full_cn) %>%
+  summarise( 
+    govt = first(govt), #the first function, which will retain the first non-missing value for each group (Precinct)
+    total_registered_voters = sum(total_registered_voters),
+    ballots_cast = sum(ballots_cast),
+    turnout = round(sum(ballots_cast)/sum(total_registered_voters), 3), # I take 3 decimal places out to help with rounding errors later on
+    yes = sum(yes),
+    no = sum(no),
+    
+    #New additions 
+    margin_raw = sum(yes) - sum(no),
+    percent_yes = round(sum(yes)/sum(ballots_cast), 2),
+    percent_no = round(sum(no)/sum(ballots_cast), 2),
+    margin_percent = sum(percent_yes) - sum(percent_no))
+```
+
+
+# EDA
+```{r}
+vars <- list("percent_yes", "margin_percent", "turnout") 
+
+
+for (col_name in vars) {
+  cat("\nSummary Statistics for '", col_name, "':\n")
+  print(summary(election_result[[col_name]]))
+}
+
+rm(vars)
+```
+
+
+
+```{r}
+ggplot(election_result, aes(x = reorder(full_cn, total_registered_voters), y = total_registered_voters, fill = total_registered_voters)) +
+  
+  geom_bar(stat = "identity", color = "black") + 
+  
+  scale_y_continuous(
+  breaks = seq(0, 60000, by = 10000),
+  limits = c(0, 60000)) +
+
+  scale_fill_gradient(low = "royalblue4", high = "springgreen3") +  # Color gradient from blue to green +
+
+  labs(title = "Total Registered Voters by Locale",
+       x = NULL,
+       y = "Total Registered Voters",
+       fill = NULL) +
+
+  theme_clean() +
+  
+  theme(panel.grid.minor.x = element_line(color = "grey", linetype = "dotted"),
+        panel.grid.major.x = element_line(color = "grey", linetype = "dotted"),
+        panel.grid.major.y = element_blank(),
+        legend.position = "none") +
+          
+  coord_flip() 
+
+
+#display.brewer.all()
+```
+
+
+# Graphing voter turnout as proportional to total registered voters 
+```{r}
+ggplot(election_result, aes(x = reorder(full_cn, total_registered_voters))) +
+  
+  geom_bar(aes(y = total_registered_voters), stat = "identity", color = "black", fill = "#E31A1C") + 
+  geom_bar(aes(y = ballots_cast), stat = "identity", color = "black", fill = "#33A02C") +
+  
+  geom_text(aes(y = ballots_cast, label = percent(turnout)), hjust = -0.2, size = 2.4, color = "black") + # Need to add the y aesthetics so R knows where to plot the label + used percent function from scales library to turn each numeric value into a percent 
+  
+  annotate("text", x = 16, y = 50000,
+         label = paste0("Green = Ballots Cast\nRed = Total Registered Voters \n Voter Turnout Rate"),
+         size = 3, color = "black", family = "Arial", fontface = "bold") + 
+
+  scale_y_continuous(breaks = seq(0, 60000, by = 10000),
+                    limits = c(0, 60000)) +
+  
+  #scale_fill_gradient(low = "royalblue4", high = "springgreen3") +  # Color gradient from blue to green +
+
+  labs(title = "Ballots Cast vs Total Registered Votes",
+       x = NULL,
+       y = "Number of Voters",
+       fill = NULL) +
+
+  theme_clean() +
+  
+  theme(panel.grid.minor.x = element_line(color = "grey", linetype = "dotted"),
+        panel.grid.major.x = element_line(color = "grey", linetype = "dotted"),
+        panel.grid.major.y = element_blank()) +
+          
+  coord_flip() 
+
+#ggsave(one, file = "Graphs/c123.png")
+
+
+# Finding colorblind friendly colors + pallets
+
+#display.brewer.all(colorblindFriendly=TRUE)
+#display.brewer.pal(12, "Set2")
+#brewer.pal(12, "Set2")
+```
+
+
+
+## Yes vote 
+```{r}
+avg_yes = sum(election_result$yes) / sum(election_result$ballots_cast)
+
+
+ggplot(election_result, aes(x = reorder(full_cn, percent_yes), y = percent_yes, fill = percent_yes)) +
+  geom_bar(stat = "identity", color = "black") +
+  
+  geom_hline(yintercept = avg_yes, color = "blue") +
+  
+  scale_fill_gradient(low = "#FC8D62", high = "#66C2A5") +  # Color gradient from blue to green
+  
+  scale_y_continuous(
+    breaks = seq(0, 1, by = .2),
+    limits = c(0, 1),
+    labels = scales::percent_format(scale = 100)) +  # adding a label to the x variable to show a percentage
+  
+  labs(
+    x = NULL, 
+    y = "Yes Vote", 
+    title = "Election Results for KDL's 2023 Millage by Area",
+    subtitle = NULL) +
+  
+  theme_clean() +
+  
+  theme(panel.grid.minor.x = element_line(color = "grey", linetype = "dotted"),
+        panel.grid.major.x = element_line(color = "grey", linetype = "dotted"),
+        panel.grid.major.y = element_blank(),
+        legend.position = "none") +
+  
+ coord_flip()
+```
+
+
+### Lollipop plot 
+```{r}
+ggplot(election_result, aes(x = reorder(full_cn, percent_yes), y = percent_yes)) +
+  geom_point( color="blue", size=4, alpha=0.6) + # for reorder function to work geom_point needs to precede geom_segment
+  geom_segment(aes(x=full_cn, xend=full_cn, y=0, yend=percent_yes), color="skyblue", size = 1) +
+  
+  scale_y_continuous(
+  breaks = seq(0, 1, by = .2),
+  limits = c(0, 1),
+  labels = scales::percent_format(scale = 100)) +
+  
+  labs(
+    x = NULL, 
+    y = "Yes Vote", 
+    title = "Election Results for KDL's 2023 Millage by Area",
+    subtitle = NULL) +
+  
+  theme_clean() +
+  
+  coord_flip() +
+  theme(panel.grid.minor.x = element_line(color = "grey", linetype = "dotted"),
+        panel.grid.major.x = element_line(color = "grey", linetype = "dotted"),
+    panel.grid.major.y = element_blank())
+
+#ggsave(one, file = "Graphs/c12433.png")
+
+```
+
+
+
+
+## Voter turnout rates 
+```{r}
+#looking at voter turnout rates 
+
+#calculating average voter turnout across Kent county
+avg_turnout = sum(election_result$ballots_cast) / sum(election_result$total_registered_voters)
+
+ggplot(election_result, aes(x = reorder(full_cn, turnout ), y = turnout, fill = turnout)) +
+  geom_bar(stat = "identity", color = "black") +
+  
+  geom_hline(yintercept = avg_turnout, color = "blue") +
+  
+  scale_fill_gradient(low = "#FC8D62", high = "#66C2A5") +  # Color gradient from blue to green
+  
+  scale_y_continuous(
+    breaks = seq(0, 1, by = .2),
+    limits = c(0, 1),
+    labels = scales::percent_format(scale = 100)) +
+  
+  labs(
+    x = NULL, 
+    y = "Turnout Rate", 
+    title = "Voter Turnout for 2023 November Election",
+    subtitle = NULL) +
+  
+  theme_clean() +
+  
+  theme(panel.grid.minor.x = element_line(color = "grey", linetype = "dotted"),
+        panel.grid.major.x = element_line(color = "grey", linetype = "dotted"),
+        panel.grid.major.y = element_blank(),
+        legend.position = "none") +
+  
+ coord_flip()
+```
+
+
+# Mapping Analysis
+
+## Merging voting data with spatial data  
+```{r}
+#Changing the case of observations in the spatial data to match election_result 
+spatial$NAMELSAD <- str_to_title(spatial$NAMELSAD)
+
+#Renaming the country name column to match column in election_result
+spatial <- spatial %>% rename(full_cn = NAMELSAD) %>% filter(COUNTYFP == "081")
+
+#Little discrepency between Caledonia CT and just township
+spatial[5, "full_cn"] <- "Caledonia Charter Township"
+
+#Merging the datasets based on the full township/county/city name to avoid duplicates with same names  
+merged_data <- merge(spatial, election_result, by = "full_cn") 
+
+#merged_data <- merged_data %>% filter(COUNTYFP == "081")
+```
+
+
+```{r}
+#Slightly editing the merged_data to display more relevant data
+
+merged_data[c(12, 16, 17), "NAME"] <- c("GR CT", "Lowell CT", "Lowell City")
+```
+
+
+## Kent county map data for Yes Vote (with missing data)
+```{r}
+ggplot() +
+  geom_sf(data = kent, fill = "lightgrey", alpha = 0.5) +
+  geom_sf(data = merged_data, aes(fill = percent_yes)) +
+  
+  #Adding labels to each county subdivision 
+  geom_sf_text(data = merged_data, aes(label = NAME), color = "black", size = 2.2) +
+  
+  scale_fill_distiller(palette = "Spectral", trans = "reverse") +
+  
+  labs(title = "Kent County Voting Data for KDL Millage Renewel",
+       subtitle = "Grey Areas not within KDL",
+       fill = "Percent of Yes Votes",
+       caption = "Source: Kent Election Reporting") +
+  
+  theme_void() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), #hjust = 0.5 centers the title
+        legend.title = element_text(face = "bold", size = 10),
+        legend.text = element_text(size = 8, colour = "black"),
+        plot.caption = element_text(hjust = 1.5, vjust = 5)) +
+  
+  #Reversing the direction of the legend
+  guides(fill = guide_colorbar(reverse = TRUE)) 
+
+#ggsave(one, file = "C:/Users/Ryan/Desktop/c123.png")
+```
+
+
+## Kent county map data for Yes Vote (all locales included)
+```{r}
+spatial[c(23, 12, 13), "NAME"] <- c("GR CT", "Lowell City", "Lowell CT")
+  
+ggplot() +
+  geom_sf(data = kent, fill = "lightgrey", alpha = 0.5) +
+  geom_sf(data = spatial, fill = "lightgrey", alpha = 0.5) +
+  geom_sf(data = merged_data, aes(fill = percent_yes)) +
+  
+  #Adding labels to each county subdivision 
+  geom_sf_text(data = spatial, aes(label = NAME), color = "black", size = 2.2) +
+  
+  scale_fill_distiller(palette = "Spectral", trans = "reverse") +
+  
+  labs(title = "Kent County Voting Data for KDL Millage Renewel",
+       fill = "Percent of Yes Votes",
+       caption = "Source: Kent Election Reporting") +
+  
+  theme_void() +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5), #hjust = 0.5 centers the title
+        legend.title = element_text(face = "bold", size = 10),
+        legend.text = element_text(size = 8, colour = "black"),
+        plot.caption = element_text(hjust = 1.5, vjust = 5)) +
+  
+  #Reversing the direction of the legend
+  guides(fill = guide_colorbar(reverse = TRUE)) 
+
+#ggsave(one, file = "C:/Users/Ryan/Desktop/c18723.png")
+```
+
+
+
+```{r eval=FALSE, include=FALSE}
+#problem with state of michigan counties on the lakeshore
+
+hmssdf <- filter(USA, STATEFP %in% c(26))
+
+ggplot(hmssdf, fill = "red") +
+  geom_sf()
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# Saving my merged df into a shape file (can't be excel, df is already saved as simple features (sf) df)
+
+st_write(spatial, "C:/Users/Ryan/Desktop/kentelectiondate.shp")
+```
+
+
+# Alternate method of using the usmap library 
+```{r eval=FALSE, include=FALSE}
+library(usmap)
+
+plot_usmap(regions = "counties") + 
+  labs(title = "US Counties",
+       subtitle = "This is a blank map of the counties of the United States.") + 
+  theme(panel.background = element_rect(color = "black", fill = "lightblue"))
+
+plot_usmap(data = statepop, values = "pop_2015", color = "red") + 
+  scale_fill_continuous(name = "Population (2015)", label = scales::comma) + 
+  theme(legend.position = "right")
+
+usmap::plot_usmap("counties", 
+                  include = c(.east_north_central))
+
+#link with more info: https://cran.r-project.org/web/packages/usmap/vignettes/mapping.html
+```
